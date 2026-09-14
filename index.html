@@ -657,22 +657,23 @@
       <button
         class="platform-tab active"
         type="button"
+        data-platform="x"
       >
         𝕏 X
       </button>
 
       <button
-        class="platform-tab disabled"
+        class="platform-tab"
         type="button"
-        disabled
+        data-platform="instagram"
       >
         Instagram
       </button>
 
       <button
-        class="platform-tab disabled"
+        class="platform-tab"
         type="button"
-        disabled
+        data-platform="tiktok"
       >
         TikTok
       </button>
@@ -860,13 +861,55 @@
        CONFIG
     ===================================================== */
 
-    // URL CSV ของ sheet "main"
-    const MAIN_CSV_URL =
-      "https://docs.google.com/spreadsheets/d/e/2PACX-1vR-CnwPK2fSRjsBrmWn3XVIXZEbDFPGguJQeco7B4nNv-7YOcxmIk0ge1846CC5OB8o3sqWK7TwIo_a/pub?output=csv";
+    /*
+      Each platform uses its OWN Google Spreadsheet.
 
-    // Spreadsheet ID
-    const SPREADSHEET_ID =
-      "1RJ7OzLLgvMSKdVTxVfKOqQXir7vXIIyWpa_gImp1PzM";
+      Recommended structure:
+
+      X Spreadsheet
+        ├── X_subject
+        ├── X_post
+        └── R_<tweet_id>
+
+      Instagram Spreadsheet
+        ├── IG_subject
+        ├── IG_post
+        └── R_<post_id>
+
+      TikTok Spreadsheet
+        ├── TT_subject
+        ├── TT_post
+        └── R_<video_id>
+    */
+
+    const PLATFORMS = {
+      x: {
+        label: "X",
+        spreadsheetId: "1RJ7OzLLgvMSKdVTxVfKOqQXir7vXIIyWpa_gImp1PzM",
+        subjectSheet: "X_subject",
+        postSheet: "X_post",
+        replyPrefix: "R_",
+        type: "x"
+      },
+
+      instagram: {
+        label: "Instagram",
+        spreadsheetId: "YOUR_INSTAGRAM_SPREADSHEET_ID",
+        subjectSheet: "IG_subject",
+        postSheet: "IG_post",
+        replyPrefix: "R_",
+        type: "instagram"
+      },
+
+      tiktok: {
+        label: "TikTok",
+        spreadsheetId: "YOUR_TIKTOK_SPREADSHEET_ID",
+        subjectSheet: "TT_subject",
+        postSheet: "TT_post",
+        replyPrefix: "R_",
+        type: "tiktok"
+      }
+    };
 
     // Supabase
     const SUPABASE_URL =
@@ -880,8 +923,11 @@
        GLOBAL STATE
     ===================================================== */
 
+    let currentPlatform = "x";
+    let currentPlatformConfig = PLATFORMS.x;
+
     let subjectRows = [];
-    let twSubjectRows = [];
+    let postRows = [];
 
     let topics = [];
     let currentTopic = null;
@@ -889,10 +935,15 @@
     let currentPostSheet = null;
 
     let postMessages = [];
-
-    let replyTweets = [];
+    let replyPosts = [];
 
     let postSelectedMessage = null;
+
+    /*
+      Used only as a fallback for Instagram/TikTok until
+      platform-aware Supabase RPCs are added.
+    */
+    const localReplyClaims = new Set();
 
 
     /* =====================================================
@@ -952,33 +1003,9 @@
 
         validateConfig();
 
-        showLoading();
+        bindPlatformTabs();
 
-        const results =
-          await Promise.all([
-            loadSheet("subject"),
-            loadSheet("tw_subject")
-          ]);
-
-        subjectRows = results[0];
-        twSubjectRows = results[1];
-
-        topics = buildTopics(subjectRows);
-
-        if (!topics.length) {
-          throw new Error(
-            "ไม่พบ Topic ใน sheet subject"
-          );
-        }
-
-        renderTopicOptions();
-
-        topicSelect.value =
-          topics[0].topicId;
-
-        await selectTopic(
-          topics[0].topicId
-        );
+        await selectPlatform("x");
 
       } catch (error) {
 
@@ -1000,21 +1027,22 @@
 
     function validateConfig() {
 
+      const activeConfig =
+        PLATFORMS[currentPlatform];
+
       if (
-        !SPREADSHEET_ID ||
-        SPREADSHEET_ID ===
-          "YOUR_GOOGLE_SPREADSHEET_ID"
+        !activeConfig ||
+        !activeConfig.spreadsheetId ||
+        activeConfig.spreadsheetId.startsWith("YOUR_")
       ) {
         throw new Error(
-          "กรุณาใส่ SPREADSHEET_ID"
+          `กรุณาใส่ Spreadsheet ID ของ ${activeConfig?.label || currentPlatform}`
         );
       }
 
       if (
         !SUPABASE_URL ||
-        SUPABASE_URL.includes(
-          "YOUR_PROJECT"
-        )
+        SUPABASE_URL.includes("YOUR_PROJECT")
       ) {
         throw new Error(
           "กรุณาใส่ SUPABASE_URL"
@@ -1035,14 +1063,142 @@
 
 
     /* =====================================================
+       PLATFORM
+    ===================================================== */
+
+    function bindPlatformTabs() {
+
+      document
+        .querySelectorAll(".platform-tab[data-platform]")
+        .forEach(button => {
+
+          button.addEventListener(
+            "click",
+            async function () {
+
+              const platform =
+                button.dataset.platform;
+
+              if (
+                !platform ||
+                platform === currentPlatform
+              ) {
+                return;
+              }
+
+              try {
+
+                await selectPlatform(platform);
+
+              } catch (error) {
+
+                console.error(error);
+
+                showError(
+                  error.message ||
+                  `โหลด ${platform} ไม่สำเร็จ`
+                );
+
+              }
+
+            }
+          );
+
+        });
+
+    }
+
+
+    async function selectPlatform(platform) {
+
+      if (!PLATFORMS[platform]) {
+        throw new Error(
+          `ไม่รู้จัก platform: ${platform}`
+        );
+      }
+
+      currentPlatform =
+        platform;
+
+      currentPlatformConfig =
+        PLATFORMS[platform];
+
+      validateConfig();
+
+      document
+        .querySelectorAll(".platform-tab")
+        .forEach(button => {
+
+          button.classList.toggle(
+            "active",
+            button.dataset.platform ===
+              currentPlatform
+          );
+
+        });
+
+      resetPost();
+
+      topicDescription.textContent = "—";
+
+      topicSelect.innerHTML =
+        `<option value="">Loading...</option>`;
+
+      replyList.innerHTML =
+        `<div class="loading">Loading...</div>`;
+
+      showLoading();
+
+      /*
+        Load only the selected platform's spreadsheet.
+      */
+      subjectRows =
+        await loadSheet(
+          currentPlatformConfig.subjectSheet
+        );
+
+      /*
+        X_subject / IG_subject / TT_subject
+        contains:
+          topic_id
+          topic_name
+          topic_desc
+      */
+      topics =
+        buildTopics(subjectRows);
+
+      if (!topics.length) {
+
+        throw new Error(
+          `ไม่พบ Topic ใน sheet ${currentPlatformConfig.subjectSheet}`
+        );
+
+      }
+
+      renderTopicOptions();
+
+      topicSelect.value =
+        topics[0].topicId;
+
+      await selectTopic(
+        topics[0].topicId
+      );
+
+    }
+
+
+    /* =====================================================
        GOOGLE SHEET
     ===================================================== */
 
     async function loadSheet(sheetName) {
 
+      const spreadsheetId =
+        currentPlatformConfig.spreadsheetId;
+
       const url =
         "https://docs.google.com/spreadsheets/d/" +
-        encodeURIComponent(SPREADSHEET_ID) +
+        encodeURIComponent(spreadsheetId) +
         "/gviz/tq?tqx=out:csv&sheet=" +
         encodeURIComponent(sheetName);
 
@@ -1050,9 +1206,11 @@
         await fetch(url);
 
       if (!response.ok) {
+
         throw new Error(
-          `โหลด sheet ${sheetName} ไม่สำเร็จ`
+          `โหลด ${currentPlatformConfig.label} / ${sheetName} ไม่สำเร็จ`
         );
+
       }
 
       const csv =
@@ -1375,15 +1533,12 @@
         topic;
 
       currentPostSheet =
-        getPostSheetName(
-          topic
-        );
+        currentPlatformConfig.postSheet;
 
       topicDescription.innerHTML =
         formatTopicDescription(
           topic.description
         );
-
 
       resetPost();
 
@@ -1394,72 +1549,87 @@
           </div>
         `;
 
+      /*
+        New platform structure:
+          X_subject -> X_post -> R_<tweet_id>
+          IG_subject -> IG_post -> R_<post_id>
+          TT_subject -> TT_post -> R_<video_id>
+
+        Do NOT try to load legacy P_<Topic_name> sheets here.
+        The selected platform's *_post sheet is the source of
+        the social-post cards shown under REPLY.
+      */
+      const platformPosts =
+        await loadPlatformPosts();
+
+      // Keep the legacy random POST-message area empty unless
+      // a separate message source is configured later.
+      postMessages = [];
 
       /*
-        Load POST and REPLY metadata
-        at the same time.
+        Only show posts belonging to the selected topic.
       */
+      const normalizedTopicId =
+        normalizeSheetValue(topic.topicId);
 
-      const [
-        posts,
-        tweets
-      ] = await Promise.all([
-        loadPostMessages(
-          currentPostSheet
-        ),
-        Promise.resolve(
-          getReplyTweets(
-            topic.topicId
-          )
-        )
-      ]);
+      const normalizedTopicName =
+        normalizeTopicName(topic.name);
 
+      replyPosts =
+        platformPosts.filter(post => {
+          const sameId =
+            normalizeSheetValue(post.topicId) ===
+            normalizedTopicId;
 
-      postMessages =
-        posts;
+          const sameName =
+            normalizeTopicName(post.topicName) ===
+            normalizedTopicName;
 
-      replyTweets =
-        tweets;
-
+          // Prefer topic_id, but fall back to topic_name
+          // so Sheets values such as 1 / 1.0 / " 1 "
+          // do not prevent posts from appearing.
+          return sameId || (!post.topicId && sameName);
+        });
 
       renderPostInfo();
-
       renderReplyCards();
 
     }
 
 
-    /* =====================================================
-       POST SHEET NAME
-    ===================================================== */
+    function normalizeSheetValue(value) {
 
-    function getPostSheetName(topic) {
+      const text = String(value ?? "").trim();
 
-      /*
-        If subject has optional post_sheet
-        column, use it.
+      if (!text) return "";
 
-        Otherwise:
-        P_ + Topic_name
-        with spaces converted to _
-      */
+      const numeric = Number(text);
 
-      if (
-        topic.postSheet
-      ) {
-
-        return topic.postSheet;
-
+      if (Number.isFinite(numeric)) {
+        return String(numeric);
       }
 
-      return (
-        "P_" +
-        String(
-          topic.topicName || ""
-        )
-          .trim()
-          .replace(/\s+/g, "_")
-      );
+      return text.toLowerCase();
+    }
+
+
+    function normalizeTopicName(value) {
+
+      return String(value ?? "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+
+    }
+
+
+    /* =====================================================
+       PLATFORM POST SHEET NAME
+    ===================================================== */
+
+    function getPostSheetName() {
+
+      return currentPlatformConfig.postSheet;
 
     }
 
@@ -1752,120 +1922,121 @@
             postSelectedMessage.text
           );
 
-        openX(url);
+        openPlatform(url);
 
       }
     );
 
 
     /* =====================================================
-       REPLY TWEETS
+       PLATFORM POSTS
     ===================================================== */
 
-    function getReplyTweets(
-      topicId
-    ) {
+    async function loadPlatformPosts() {
 
-      const map =
-        new Map();
+      const rows =
+        await loadSheet(
+          currentPlatformConfig.postSheet
+        );
 
-      for (
-        const row of twSubjectRows
-      ) {
+      return rows
+        .map(row => {
 
-        const rowTopicId =
-          String(
-            row.topic_id || ""
-          ).trim();
+          const postId =
+            String(
+              row.tweet_id ||
+              row.post_id ||
+              row.video_id ||
+              row.platform_post_id ||
+              ""
+            ).trim();
 
-        if (
-          rowTopicId !==
-          String(topicId)
-        ) {
-          continue;
-        }
+          if (!postId) {
+            return null;
+          }
 
+          const linkPost =
+            String(
+              row.link_post || ""
+            ).trim();
 
-        const tweetId =
-          String(
-            row.tweet_id || ""
-          ).trim();
+          return {
+            topicId:
+              String(
+                row.topic_id || ""
+              ).trim(),
 
+            topicName:
+              String(
+                row.topic_name || ""
+              ).trim(),
 
-        /*
-          Ignore #N/A and invalid IDs
-        */
+            postId,
 
-        if (
-          !isValidTweetId(
-            tweetId
-          )
-        ) {
-          continue;
-        }
-
-
-        if (
-          map.has(tweetId)
-        ) {
-          continue;
-        }
-
-
-        const accName =
-          String(
-            row.acc_name || ""
-          ).trim();
-
-
-        const linkPost =
-          String(
-            row.link_post || ""
-          ).trim();
-
-
-        const tweetDesc =
-          String(
-            row.tweet_desc || ""
-          ).trim();
-
-
-        const priority =
-          normalizePriority(
-            row.priority
-          );
-
-
-        map.set(
-          tweetId,
-          {
-            tweetId,
             accName:
-              accName ||
+              String(
+                row.acc_name ||
+                row.username ||
+                row.account_name ||
+                ""
+              ).trim() ||
               "Unknown",
 
             linkPost,
 
+            // รองรับชื่อคอลัมน์จาก Google Sheets และ X API v2 public_metrics
             likes:
-              row.likes || "",
+              row.likes ??
+              row.like_count ??
+              row.likes_count ??
+              "",
 
             replies:
-              row.replies || "",
+              row.replies ??
+              row.reply_count ??
+              row.replies_count ??
+              row.comments ??
+              row.comment_count ??
+              "",
 
             reposts:
-              row.reposts || "",
+              row.reposts ??
+              row.repost_count ??
+              row.reposts_count ??
+              row.retweets ??
+              row.retweet_count ??
+              row.shares ??
+              row.share_count ??
+              "",
 
-            priority,
+            quotes:
+              row.quotes ??
+              row.quote_count ??
+              "",
 
-            tweetDesc
-          }
-        );
+            views:
+              row.views ??
+              row.view_count ??
+              row.impression_count ??
+              "",
 
-      }
+            priority:
+              normalizePriority(
+                row.priority ||
+                row.piority
+              ),
 
-      return Array.from(
-        map.values()
-      );
+            description:
+              String(
+                row.tweet_desc ||
+                row.post_desc ||
+                row.video_desc ||
+                ""
+              ).trim()
+          };
+
+        })
+        .filter(Boolean);
 
     }
 
@@ -1876,12 +2047,12 @@
 
     function renderReplyCards() {
 
-      if (!replyTweets.length) {
+      if (!replyPosts.length) {
 
         replyList.innerHTML =
           `
             <div class="loading">
-              ไม่พบ Tweet สำหรับ Topic นี้
+              ไม่พบโพสต์สำหรับ Topic นี้
             </div>
           `;
 
@@ -1894,18 +2065,18 @@
 
 
       replyCount.textContent =
-        `${replyTweets.length} tweets`;
+        `${replyPosts.length} posts`;
 
 
       replyList.innerHTML = "";
 
 
-      replyTweets.forEach(
-        tweet => {
+      replyPosts.forEach(
+        post => {
 
           const card =
             createReplyCard(
-              tweet
+              post
             );
 
           replyList.appendChild(
@@ -1919,7 +2090,7 @@
 
 
     function createReplyCard(
-      tweet
+      post
     ) {
 
       const card =
@@ -1953,7 +2124,7 @@
         );
 
       priority.className =
-        `priority-badge priority-${tweet.priority}`;
+        `priority-badge priority-${post.priority}`;
 
 
       const priorityDot =
@@ -1976,7 +2147,7 @@
         );
 
       priorityText.textContent =
-        tweet.priority;
+        post.priority;
 
 
       priority.appendChild(
@@ -1994,7 +2165,7 @@
 
       account.textContent =
         "@" +
-        tweet.accName;
+        post.accName;
 
 
       const headerStatus =
@@ -2029,14 +2200,11 @@
         "noopener noreferrer";
 
       tweetLink.href =
-        tweet.linkPost ||
-        getTweetUrl(
-          tweet.tweetId
-        );
+        getPostUrl(post);
 
       tweetLink.innerHTML =
         `
-          ${maskTweetId(tweet.tweetId)}
+          ${maskPostId(post.postId)}
           <span class="tweet-arrow">↗</span>
         `;
 
@@ -2092,7 +2260,7 @@
       */
 
       if (
-        tweet.tweetDesc
+        post.description
       ) {
 
         const desc =
@@ -2104,7 +2272,7 @@
           "tweet-description";
 
         desc.textContent =
-          tweet.tweetDesc;
+          post.description;
 
         body.appendChild(
           desc
@@ -2128,9 +2296,11 @@
 
       engagement.innerHTML =
         `
-          <span>♥ ${formatCount(tweet.likes)}</span>
-          <span>↩ ${formatCount(tweet.replies)}</span>
-          <span>↻ ${formatCount(tweet.reposts)}</span>
+          <span title="Likes">♥ ${formatCount(post.likes)}</span>
+          <span title="Replies">↩ ${formatCount(post.replies)}</span>
+          <span title="Reposts / Retweets">↻ ${formatCount(post.reposts)}</span>
+          ${post.quotes !== "" && post.quotes != null ? `<span title="Quotes">❝ ${formatCount(post.quotes)}</span>` : ""}
+          ${post.views !== "" && post.views != null ? `<span title="Views">◉ ${formatCount(post.views)}</span>` : ""}
         `;
 
 
@@ -2357,7 +2527,7 @@
 
             const result =
               await claimRandomReplyMessage(
-                tweet
+                post
               );
 
 
@@ -2442,12 +2612,12 @@
 
           const url =
             createReplyUrl(
-              tweet.tweetId,
+              post.postId,
               selectedMessage.text
             );
 
 
-          openX(url);
+          openPlatform(url);
 
 
           /*
@@ -2562,18 +2732,16 @@
     ===================================================== */
 
     async function claimRandomReplyMessage(
-      tweet
+      post
     ) {
 
       const sheetName =
-        `R_${tweet.tweetId}`;
-
+        `${currentPlatformConfig.replyPrefix}${post.postId}`;
 
       const rows =
         await loadSheet(
           sheetName
         );
-
 
       const messages =
         rows.filter(
@@ -2589,14 +2757,10 @@
                 row.text || ""
               ).trim();
 
-            return (
-              id &&
-              text
-            );
+            return id && text;
 
           }
         );
-
 
       if (!messages.length) {
 
@@ -2606,12 +2770,10 @@
 
       }
 
-
       const shuffled =
         shuffle([
           ...messages
         ]);
-
 
       for (
         const message of shuffled
@@ -2619,25 +2781,21 @@
 
         const claimed =
           await claimReply(
-            tweet.tweetId,
+            post.postId,
             message.message_id
           );
-
 
         if (claimed) {
 
           const usage =
             await getReplyUsage(
-              tweet.tweetId
+              post.postId
             );
-
 
           return {
             message,
-
             total:
               messages.length,
-
             remaining:
               Math.max(
                 0,
@@ -2650,26 +2808,52 @@
 
       }
 
-
       return null;
 
     }
 
 
     async function claimReply(
-      tweetId,
+      postId,
       messageId
     ) {
+
+      /*
+        Current Supabase RPC is tweet-based.
+
+        For X we use the existing RPC exactly as before.
+
+        For Instagram/TikTok we use a browser-session
+        fallback until the Supabase RPC is changed to
+        accept platform + post_id.
+      */
+      if (
+        currentPlatform !== "x"
+      ) {
+
+        const key =
+          `${currentPlatform}:${postId}:${messageId}`;
+
+        if (
+          localReplyClaims.has(key)
+        ) {
+          return false;
+        }
+
+        localReplyClaims.add(key);
+
+        return true;
+
+      }
 
       const response =
         await supabaseFetch(
           "/rest/v1/rpc/claim_reply_message",
           {
             method: "POST",
-
             body: JSON.stringify({
               p_tweet_id:
-                String(tweetId),
+                String(postId),
 
               p_message_id:
                 String(messageId)
@@ -2677,25 +2861,18 @@
           }
         );
 
-
       if (
         typeof response ===
         "boolean"
       ) {
-
         return response;
-
       }
-
 
       if (
         Array.isArray(response)
       ) {
-
         return response[0] === true;
-
       }
-
 
       return false;
 
@@ -2703,22 +2880,28 @@
 
 
     async function getReplyUsage(
-      tweetId
+      postId
     ) {
+
+      if (
+        currentPlatform !== "x"
+      ) {
+
+        return 0;
+
+      }
 
       const response =
         await supabaseFetch(
           "/rest/v1/rpc/get_reply_usage",
           {
             method: "POST",
-
             body: JSON.stringify({
               p_tweet_id:
-                String(tweetId)
+                String(postId)
             })
           }
         );
-
 
       return Number(response) || 0;
 
@@ -2843,34 +3026,106 @@
 
 
     /* =====================================================
-       X URL
+       PLATFORM URL
     ===================================================== */
 
-    function createPostUrl(
-      text
-    ) {
+    function createPostUrl(text) {
 
-      return (
-        "https://twitter.com/intent/tweet" +
-        "?text=" +
-        encodeURIComponent(text)
-      );
+      if (
+        currentPlatform === "x"
+      ) {
+
+        return (
+          "https://twitter.com/intent/tweet" +
+          "?text=" +
+          encodeURIComponent(text)
+        );
+
+      }
+
+      /*
+        Instagram/TikTok do not have the same public
+        browser intent URL used by X.
+
+        For those platforms, POST opens the platform
+        home page for now.
+      */
+      if (
+        currentPlatform === "instagram"
+      ) {
+        return "https://www.instagram.com/";
+      }
+
+      if (
+        currentPlatform === "tiktok"
+      ) {
+        return "https://www.tiktok.com/";
+      }
+
+      return "#";
 
     }
 
 
     function createReplyUrl(
-      tweetId,
+      postId,
       text
     ) {
 
+      if (
+        currentPlatform === "x"
+      ) {
+
+        return (
+          "https://x.com/intent/tweet" +
+          "?in_reply_to=" +
+          encodeURIComponent(postId) +
+          "&text=" +
+          encodeURIComponent(text)
+        );
+
+      }
+
+      /*
+        Instagram/TikTok have no equivalent
+        universal web reply intent URL.
+
+        Open the original post instead.
+      */
+      const post =
+        replyPosts.find(
+          item =>
+            String(item.postId) ===
+            String(postId)
+        );
+
       return (
-        "https://x.com/intent/tweet" +
-        "?in_reply_to=" +
-        encodeURIComponent(tweetId) +
-        "&text=" +
-        encodeURIComponent(text)
+        post?.linkPost ||
+        "#"
       );
+
+    }
+
+
+    function getPostUrl(
+      post
+    ) {
+
+      if (
+        post?.linkPost
+      ) {
+        return post.linkPost;
+      }
+
+      if (
+        currentPlatform === "x"
+      ) {
+        return getTweetUrl(
+          post?.postId
+        );
+      }
+
+      return "#";
 
     }
 
@@ -2891,7 +3146,13 @@
     }
 
 
-    function openX(url) {
+    function openPlatform(
+      url
+    ) {
+
+      if (!url || url === "#") {
+        return;
+      }
 
       window.open(
         url,
@@ -2906,41 +3167,34 @@
        HELPERS
     ===================================================== */
 
-    function isValidTweetId(
+    function isValidPostId(
       value
     ) {
-
-      return /^\d+$/.test(
-        String(value || "").trim()
-      );
-
+      return String(
+        value || ""
+      ).trim() !== "";
     }
 
 
-    function maskTweetId(
-      tweetId
+    function maskPostId(
+      postId
     ) {
 
       const id =
         String(
-          tweetId || ""
+          postId || ""
         ).trim();
-
 
       if (!id) {
         return "••••••••";
       }
 
-
       if (id.length <= 4) {
-
         return (
           "••••" +
           id
         );
-
       }
-
 
       return (
         "••••••••" +
