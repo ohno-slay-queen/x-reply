@@ -1564,7 +1564,7 @@
 
       // Keep the legacy random POST-message area empty unless
       // a separate message source is configured later.
-      const postSheetName = `P_${topic.name}`;
+      const postSheetName = `P_${topic.topicName}`;
       postMessages =
           await loadPostMessages(postSheetName);
         
