@@ -1564,7 +1564,12 @@
 
       // Keep the legacy random POST-message area empty unless
       // a separate message source is configured later.
-      postMessages = [];
+      const postSheetName = `P_${topic.name}`;
+      postMessages =
+          await loadPostMessages(postSheetName);
+        
+      currentPostSheet =
+          postSheetName;
 
       /*
         Only show posts belonging to the selected topic.
